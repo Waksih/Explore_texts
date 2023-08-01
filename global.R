@@ -1,0 +1,120 @@
+library(tidyverse)
+library(tm)
+library(wordcloud)
+library(stringr)
+library(tidytext)
+library(tokenizers)
+library(RColorBrewer)
+library(shiny)
+library(shinydashboard)
+library(DT)
+library(RPostgres)
+library(DBI)
+library(glue)
+library(shinyjs)
+library(bcrypt)
+library(mime)
+library(dotenv)
+
+dotenv::load_dot_env(".env")
+
+db_host <- Sys.getenv("DB_HOST")
+db_port <- as.integer(Sys.getenv("DB_PORT"))
+db_name <- Sys.getenv("DB_NAME")
+db_user <- Sys.getenv("DB_USER")
+db_password <- Sys.getenv("DB_PASSWORD")
+
+#connect to the database
+con<- dbConnect(RPostgres::Postgres(),
+                dbname = db_name,
+                user=db_user,
+                port = db_port, 
+                password = db_password,
+                host = db_host)
+
+
+# Function to retrieve the user role
+getUserRole <- function(username) {
+  query <- paste0("SELECT role FROM users WHERE username = '", username, "'")
+  role <- dbGetQuery(con, query)
+  return(role[[1]])
+}
+
+# Function to check if a user exists in the database
+userExists <- function(username) {
+  query <- paste0("SELECT COUNT(*) FROM users WHERE username = '", username, "'")
+  result <- dbGetQuery(con, query)
+  as.integer(result[[1]]) > 0
+}
+
+# Function to validate the login password
+validatePassword <- function(username, password) {
+  query <- paste0("SELECT password FROM users WHERE username = '", username, "'")
+  result <- dbGetQuery(con, query)
+  storedHashedPassword <- result[[1]]
+  
+  bcrypt::checkpw(password, storedHashedPassword)
+}
+
+
+# Function to insert a new user into the database
+insertUser <- function(username, password, role) {
+  #hash the password
+  hashedPassword <- bcrypt::hashpw(password, bcrypt::gensalt())
+  
+  query <- paste0("INSERT INTO users (username, password, role) VALUES ('", username, "', '", hashedPassword, "', '", role, "')")
+  dbExecute(con, query)
+}
+
+# Function to extract the topic based on the file name
+getTopic <- function(file_name) {
+  if (grepl("\\_siasa\\.", file_name, ignore.case = TRUE)) {
+    return("Politics")
+  } else if (grepl("\\_uharakati\\.", file_name, ignore.case = TRUE)) {
+    return("Activism")
+  } else if (grepl("\\_afya\\.", file_name, ignore.case = TRUE)) {
+    return("Healthcare")
+  } else if (grepl("\\_fedha\\.", file_name, ignore.case = TRUE)) {
+    return("Finance")
+  } else if (grepl("\\_ukulima\\.", file_name, ignore.case = TRUE)) {
+    return("Agriculture")
+  } else if (grepl("\\_teknolojia\\.", file_name, ignore.case = TRUE)) {
+    return("Technology")
+  } else {
+    return("Other")
+  }
+}
+
+
+
+#create my own sentiment lexicons for use in analysis
+positive<-read_lines("positive_words_sw.txt")
+length(positive)
+negative<-read_lines("negative_words_sw.txt")
+length(negative)
+
+my_lexicon<-structure(data.frame(word=c(positive,negative),
+                                 sentiment=c(rep("positive", 
+                                                 times=length(positive)),rep("negative", times=length(negative)))))
+
+
+#assigning polarity values to the sentiments for sentiment scores
+my_lexicon<- my_lexicon %>% 
+  mutate(polarity=recode(sentiment, "positive"=1, "negative"=-1))
+
+set.seed(40)
+rows<-sample(nrow(my_lexicon))
+my_lexicon<-my_lexicon[rows, ]
+
+#created my own stop words data frame for use
+
+stopword<-c("ni","na","pia","au","ya","wa","za","kwa","la","cha","katika",
+            "baina","kwani","kama","cha","vile","huu","hii","vile","kuwa","huwa","ili","ah","ha", "ahh", stopwords("english"))
+
+stopword<-as.data.frame(stopword)
+
+stopword<-stopword %>% 
+  mutate(word=stopword)
+
+
+
